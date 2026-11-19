@@ -366,11 +366,9 @@ private enum LearningTrack: String, CaseIterable, Identifiable {
     var lessonCount: Int { 30 }
 
     var demoLessonUnlockLimit: Int {
-        #if DEBUG
+        // Keep the first ten lessons open in demo installs, including builds
+        // launched directly on a signed iPhone from Xcode.
         10
-        #else
-        0
-        #endif
     }
 
     private func extendedLesson(_ number: Int) -> CourseLesson {
@@ -2349,18 +2347,19 @@ private struct ReferenceLibraryView: View {
             ForEach(LearningTrack.allCases) { track in
                 Section {
                     ForEach(1...track.lessonCount, id: \.self) { lessonNumber in
-                        let lessonID = "\(track.rawValue).\(String(format: "%02d", lessonNumber))"
-                        let isUnlocked = completedIDs.contains(lessonID) || lessonNumber <= track.demoLessonUnlockLimit
-                        if isUnlocked {
-                            DisclosureGroup {
-                                ConceptMapDetail(track: track, lessonNumber: lessonNumber)
-                                Link(track.sourceTitle(at: lessonNumber), destination: track.sourceURL(at: lessonNumber))
-                                    .font(.system(size: 11, design: .rounded))
-                            } label: {
+                        DisclosureGroup {
+                            ConceptMapDetail(track: track, lessonNumber: lessonNumber)
+                            Link(track.sourceTitle(at: lessonNumber), destination: track.sourceURL(at: lessonNumber))
+                                .font(.system(size: 11, design: .rounded))
+                        } label: {
+                            HStack(alignment: .top, spacing: 9) {
+                                Text(String(format: "%02d", lessonNumber))
+                                    .font(.system(size: 10, weight: .heavy, design: .rounded))
+                                    .foregroundStyle(track.color)
                                 LibraryKeywordRow(lesson: track.title(at: lessonNumber), words: track.keywords(for: lessonNumber), tint: track.color)
                             }
-                            .listRowBackground(Color.white)
                         }
+                        .listRowBackground(Color.white)
                     }
                 }
                 header: {
@@ -2419,7 +2418,7 @@ private struct ConceptMapDetail: View {
                     }
                 }
             }
-            Text("Tap the next unlocked lesson to add new branches to your map.")
+            Text("These connected ideas preview the full course. Open a lesson to study each concept in depth.")
                 .font(.system(size: 10, design: .rounded)).foregroundStyle(Palette.muted)
         }.padding(.vertical, 7)
     }
