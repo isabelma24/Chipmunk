@@ -2,3 +2,10 @@
 **/xcuserdata/
 DerivedData/
 build/
+
+# Swift Package Manager build products and indexes (machine-specific caches)
+.build/
+.swiftpm/xcode/package.xcworkspace/xcuserdata/
+
+# Xcode per-user state
+*.xcuserstate
