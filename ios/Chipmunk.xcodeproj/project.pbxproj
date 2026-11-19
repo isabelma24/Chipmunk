@@ -10,6 +10,9 @@
 		A10000000000000000000001 /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* App.swift */; };
 		A10000000000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* ContentView.swift */; };
 		A10000000000000000000003 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000004 /* Assets.xcassets */; };
+		A10000000000000000000005 /* CareProgressRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000005 /* CareProgressRules.swift */; };
+		A10000000000000000000006 /* CareProgressRulesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000006 /* CareProgressRulesTests.swift */; };
+		A10000000000000000000007 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B10000000000000000000007 /* XCTest.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -17,6 +20,10 @@
 		B10000000000000000000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		B10000000000000000000003 /* Chipmunk.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Chipmunk.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000004 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B10000000000000000000005 /* CareProgressRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CareProgressRules.swift; sourceTree = "<group>"; };
+		B10000000000000000000006 /* CareProgressRulesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CareProgressRulesTests.swift; sourceTree = "<group>"; };
+		B10000000000000000000007 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = System/Library/Frameworks/XCTest.framework; sourceTree = SDKROOT; };
+		B10000000000000000000008 /* ChipmunkTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ChipmunkTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -27,6 +34,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+C10000000000000000000004 /* ChipmunkTests Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000007 /* XCTest.framework in Frameworks */,); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -35,6 +43,7 @@
 			children = (
 				B10000000000000000000001 /* App.swift */,
 				B10000000000000000000002 /* ContentView.swift */,
+				B10000000000000000000005 /* CareProgressRules.swift */,
 				B10000000000000000000004 /* Assets.xcassets */,
 			);
 			path = HerHealthLearning;
@@ -45,6 +54,7 @@
 			children = (
 				D10000000000000000000001 /* HerHealthLearning */,
 				D10000000000000000000003 /* Products */,
+				D10000000000000000000004 /* ChipmunkTests */,
 			);
 			sourceTree = "<group>";
 		};
@@ -52,10 +62,12 @@
 			isa = PBXGroup;
 			children = (
 				B10000000000000000000003 /* Chipmunk.app */,
+				B10000000000000000000008 /* ChipmunkTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
 		};
+D10000000000000000000004 /* ChipmunkTests */ = {isa = PBXGroup; children = (B10000000000000000000006 /* CareProgressRulesTests.swift */,); path = ChipmunkTests; sourceTree = "<group>"; };
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -76,6 +88,7 @@
 			productReference = B10000000000000000000003 /* Chipmunk.app */;
 			productType = "com.apple.product-type.application";
 		};
+E10000000000000000000002 /* ChipmunkTests */ = {isa = PBXNativeTarget; buildConfigurationList = F10000000000000000000004 /* Build configuration list for PBXNativeTarget "ChipmunkTests" */; buildPhases = (C10000000000000000000005 /* ChipmunkTests Sources */, C10000000000000000000004 /* ChipmunkTests Frameworks */,); buildRules = (); dependencies = (H10000000000000000000001 /* PBXTargetDependency */,); name = ChipmunkTests; productName = ChipmunkTests; productReference = B10000000000000000000008 /* ChipmunkTests.xctest */; productType = "com.apple.product-type.bundle.unit-test"; };
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -104,6 +117,7 @@
 			projectRoot = "";
 			targets = (
 				E10000000000000000000001 /* Chipmunk */,
+				E10000000000000000000002 /* ChipmunkTests */,
 			);
 		};
 /* End PBXProject section */
@@ -126,9 +140,11 @@
 			files = (
 				A10000000000000000000001 /* App.swift in Sources */,
 				A10000000000000000000002 /* ContentView.swift in Sources */,
+				A10000000000000000000005 /* CareProgressRules.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+C10000000000000000000005 /* ChipmunkTests Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000006 /* CareProgressRulesTests.swift in Sources */,); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
@@ -266,6 +282,8 @@
 			};
 			name = Release;
 		};
+G10000000000000000000005 /* ChipmunkTests Debug */ = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.chipmunk.learn.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Chipmunk.app/Chipmunk"; }; name = Debug; };
+		G10000000000000000000006 /* ChipmunkTests Release */ = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.chipmunk.learn.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Chipmunk.app/Chipmunk"; }; name = Release; };
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -287,7 +305,10 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+F10000000000000000000004 /* Build configuration list for PBXNativeTarget "ChipmunkTests" */ = {isa = XCConfigurationList; buildConfigurations = (G10000000000000000000005 /* ChipmunkTests Debug */, G10000000000000000000006 /* ChipmunkTests Release */,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 /* End XCConfigurationList section */
+		H10000000000000000000001 /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = E10000000000000000000001 /* Chipmunk */; targetProxy = H10000000000000000000002 /* PBXContainerItemProxy */; };
+		H10000000000000000000002 /* PBXContainerItemProxy */ = {isa = PBXContainerItemProxy; containerPortal = F10000000000000000000001 /* Project object */; proxyType = 1; remoteGlobalIDString = E10000000000000000000001; remoteInfo = Chipmunk; };
 	};
 	rootObject = F10000000000000000000001 /* Project object */;
 }

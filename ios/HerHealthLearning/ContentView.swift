@@ -31,6 +31,16 @@ private enum DailyRewardLedger {
             for need in CompanionNeed.allCases { defaults.removeObject(forKey: startKey(for: need)) }
             defaults.set(3, forKey: "chipmunk.careRulesVersion")
         }
+        if defaults.integer(forKey: "chipmunk.careRulesVersion") < 4 {
+            let isCurrentLocalDay = defaults.string(forKey: "chipmunk.rewardDay") == dayKey
+            for need in CompanionNeed.allCases {
+                let normalized = CareProgressRules.normalizeNeed(needValue(need, defaults: defaults))
+                defaults.set(normalized, forKey: need.storageKey)
+                defaults.set(normalized, forKey: startKey(for: need))
+            }
+            if isCurrentLocalDay { defaults.set(dailyStartingCare, forKey: "chipmunk.dailyCare") }
+            defaults.set(4, forKey: "chipmunk.careRulesVersion")
+        }
         let key = dayKey
         if defaults.string(forKey: "chipmunk.rewardDay") == key {
             if CompanionNeed.allCases.contains(where: { defaults.object(forKey: startKey(for: $0)) == nil }) {
@@ -47,7 +57,7 @@ private enum DailyRewardLedger {
             let daysAway = max(1, Calendar.current.dateComponents([.day], from: date(from: previousDay), to: Date()).day ?? 1)
             let previousDailyCare = defaults.integer(forKey: "chipmunk.dailyCare")
             let studiedPreviousDay = defaults.string(forKey: "chipmunk.lastStudyDay") == previousDay
-            if daysAway == 1, studiedPreviousDay, previousDailyCare > 80 {
+            if daysAway == 1, CareProgressRules.qualifiesForBadge(studied: studiedPreviousDay, dailyCare: previousDailyCare) {
                 let previousDate = date(from: previousDay)
                 let dayBeforePrevious = Calendar.current.date(byAdding: .day, value: -1, to: previousDate) ?? previousDate
                 let lastCareDay = defaults.string(forKey: "chipmunk.lastCareBadgeDay") ?? ""
@@ -60,12 +70,11 @@ private enum DailyRewardLedger {
             }
             for need in CompanionNeed.allCases {
                 let stored = needValue(need, defaults: defaults)
-                let decayed = Int(Double(stored) * pow(0.5, Double(daysAway)))
-                defaults.set(max(15, decayed), forKey: need.storageKey)
+                defaults.set(CareProgressRules.decay(stored, days: daysAway), forKey: need.storageKey)
             }
         } else {
             for need in CompanionNeed.allCases {
-                if defaults.object(forKey: need.storageKey) == nil { defaults.set(55, forKey: need.storageKey) }
+                if defaults.object(forKey: need.storageKey) == nil { defaults.set(CareProgressRules.initialNeed, forKey: need.storageKey) }
             }
         }
         defaults.set(key, forKey: "chipmunk.rewardDay")
@@ -128,17 +137,10 @@ private enum DailyRewardLedger {
     private static func award(_ requested: Int) -> Int {
         beginDay()
         let defaults = UserDefaults.standard
-        var remaining = min(requested, availableCare(defaults: defaults))
-        let earned = remaining
-        while remaining > 0,
-              let need = CompanionNeed.allCases.filter({ needValue($0, defaults: defaults) < 100 }).min(by: {
-                  needValue($0, defaults: defaults) < needValue($1, defaults: defaults)
-              }) {
-            let current = needValue(need, defaults: defaults)
-            let added = min(remaining, 100 - current)
-            defaults.set(current + added, forKey: need.storageKey)
-            remaining -= added
-        }
+        let currentNeeds = CompanionNeed.allCases.map { needValue($0, defaults: defaults) }
+        let result = CareProgressRules.applying(min(requested, availableCare(defaults: defaults)), to: currentNeeds)
+        let earned = result.applied
+        for (need, value) in zip(CompanionNeed.allCases, result.needs) { defaults.set(value, forKey: need.storageKey) }
         guard earned > 0 else { return 0 }
         defaults.set(calculateDailyCare(defaults: defaults), forKey: "chipmunk.dailyCare")
         return earned
@@ -149,18 +151,15 @@ private enum DailyRewardLedger {
     }
 
     private static func calculateDailyCare(defaults: UserDefaults) -> Int {
-        let startingTotal = CompanionNeed.allCases.reduce(0) { $0 + (defaults.object(forKey: startKey(for: $1)) == nil ? needValue($1, defaults: defaults) : defaults.integer(forKey: startKey(for: $1))) }
-        let restoredTotal = CompanionNeed.allCases.reduce(0) { total, need in
-            let starting = defaults.object(forKey: startKey(for: need)) == nil ? needValue(need, defaults: defaults) : defaults.integer(forKey: startKey(for: need))
-            return total + max(0, needValue(need, defaults: defaults) - starting)
+        let starting = CompanionNeed.allCases.map { need in
+            defaults.object(forKey: startKey(for: need)) == nil ? needValue(need, defaults: defaults) : defaults.integer(forKey: startKey(for: need))
         }
-        let totalRoom = CompanionNeed.allCases.count * 100 - startingTotal
-        guard totalRoom > 0 else { return 100 }
-        return min(dailyCap, dailyStartingCare + restoredTotal * (dailyCap - dailyStartingCare) / totalRoom)
+        let current = CompanionNeed.allCases.map { needValue($0, defaults: defaults) }
+        return CareProgressRules.dailyCare(starting: starting, current: current)
     }
 
     private static func needValue(_ need: CompanionNeed, defaults: UserDefaults) -> Int {
-        defaults.object(forKey: need.storageKey) == nil ? 55 : defaults.integer(forKey: need.storageKey)
+        defaults.object(forKey: need.storageKey) == nil ? CareProgressRules.initialNeed : defaults.integer(forKey: need.storageKey)
     }
 
     private static func startKey(for need: CompanionNeed) -> String { "chipmunk.careStart.\(need.rawValue)" }
@@ -266,8 +265,8 @@ private enum LearningTrack: String, CaseIterable, Identifiable {
 
     var lessonExplanation: String {
         switch self {
-        case .body: "Anatomy describes body structures. Physiology explains how those structures work. Textbooks build from small pieces to larger systems: chemical, cellular, tissue, organ, organ system, and the whole organism."
-        case .mind: "Mental health includes emotional, psychological, and social well-being. It is part of overall health and can change across time and circumstances. Learning about a condition is not the same as diagnosing yourself."
+        case .body: "Anatomy describes body structures. Physiology explains how those structures work. Textbooks build from small pieces to larger systems: chemical, cellular, tissue, organ, organ system, and the whole organism. Each level depends on the ones beneath it, and body systems work together rather than in isolation."
+        case .mind: "Mental health includes emotional, psychological, and social well-being. It is part of overall health and can change across time and circumstances. Biology, relationships, community, and access to resources all matter. Learning about a condition is not the same as diagnosing yourself."
         }
     }
 
@@ -322,8 +321,8 @@ private enum LearningTrack: String, CaseIterable, Identifiable {
 
     var secondExplanation: String {
         switch self {
-        case .body: "Homeostasis is the body’s ongoing regulation of internal conditions within healthy ranges. Negative feedback helps reverse a change that moves a condition away from its usual range."
-        case .mind: "Health is shaped by interacting biological, behavioral, social, structural, and environmental factors. A women-centered mental health course looks at those influences together instead of assuming one explanation fits everyone."
+        case .body: "Homeostasis is the body’s ongoing regulation of internal conditions within healthy ranges. Negative feedback helps reverse a change that moves a condition away from its usual range. Regulation does not mean a variable never changes; temperature, blood glucose, and fluid balance shift as the body responds to its environment."
+        case .mind: "Health is shaped by interacting biological, behavioral, social, structural, and environmental factors. A women-centered mental health course looks at those influences together instead of assuming one explanation fits everyone. It also asks whose experiences appear in a study, what was measured, and where evidence is still limited."
         }
     }
 
@@ -364,7 +363,15 @@ private enum LearningTrack: String, CaseIterable, Identifiable {
         }
     }
 
-    var lessonCount: Int { 10 }
+    var lessonCount: Int { 30 }
+
+    var demoLessonUnlockLimit: Int {
+        #if DEBUG
+        10
+        #else
+        0
+        #endif
+    }
 
     private func extendedLesson(_ number: Int) -> CourseLesson {
         (self == .mind ? MindCourse.lessons : BodyCourse.lessons)[number - 3]
@@ -444,7 +451,27 @@ private enum MindCourse {
         CourseLesson(title: "ADHD and executive function", explanation: "ADHD is a neurodevelopmental disorder involving persistent patterns of inattention and/or hyperactivity-impulsivity that can affect functioning. Sleep problems, stress, anxiety, depression, and other conditions can produce overlapping difficulties, so a quiz cannot diagnose ADHD.", example: "Forgetting a task once is common. Assessment considers a persistent pattern across settings and a person’s developmental and health history.", prompt: "Why is a short attention game not an ADHD test?", options: ["Attention never varies", "Many factors affect attention; diagnosis requires a qualified assessment", "ADHD can be diagnosed from one missed task"], answer: "Many factors affect attention; diagnosis requires a qualified assessment", sourceTitle: "NIMH · Attention-Deficit/Hyperactivity Disorder", sourceURL: URL(string: "https://www.nimh.nih.gov/health/topics/attention-deficit-hyperactivity-disorder-adhd")!, keywords: ["ADHD", "Executive function", "Attention", "Assessment"]),
         CourseLesson(title: "Trauma, safety, and support", explanation: "Trauma exposure and responses vary. Post-traumatic stress disorder is one possible response, but not everyone who experiences trauma develops PTSD. Safety, support, culture, and access to care shape recovery and well-being.", example: "Two people can respond differently to a similar event. Their reactions deserve care without comparison or assumptions.", prompt: "Which statement about trauma responses is accurate?", options: ["Everyone responds the same way", "Responses vary, and not everyone develops PTSD", "A person’s reaction can be judged from one detail"], answer: "Responses vary, and not everyone develops PTSD", sourceTitle: "NIMH · Post-Traumatic Stress Disorder", sourceURL: URL(string: "https://www.nimh.nih.gov/health/topics/post-traumatic-stress-disorder-ptsd")!, keywords: ["Trauma", "PTSD", "Safety", "Social support"]),
         CourseLesson(title: "Hormones and life stages", explanation: "Some people experience mental-health symptoms around reproductive hormone transitions, including premenstrual dysphoric disorder, perinatal depression, or the menopause transition. Experiences differ; timing can be relevant information for a clinician but is not a diagnosis by itself.", example: "A person might notice a recurring change across a cycle. A careful record can help them describe timing to a health professional if they choose.", prompt: "What can a repeated timing pattern offer?", options: ["A diagnosis by itself", "Useful context to discuss with a qualified health professional", "Proof that hormones explain every mood change"], answer: "Useful context to discuss with a qualified health professional", sourceTitle: "NIMH · Women and Mental Health", sourceURL: URL(string: "https://www.nimh.nih.gov/health/topics/women-and-mental-health")!, keywords: ["Reproductive life stages", "Hormone transition", "PMDD", "Perinatal mental health"]),
-        CourseLesson(title: "How women’s health research works", explanation: "A women-centered research lens asks how biological, behavioral, social, structural, and environmental factors interact across the life course. Sex and gender are distinct concepts, and study populations and methods affect what findings can tell us.", example: "A study in one age group or population may not answer the same question for everyone. Good evidence states who was studied and what remains uncertain.", prompt: "What should you check when reading a health claim?", options: ["Who was studied, how, and what is still uncertain", "Only whether the headline sounds confident", "Whether one finding applies to every person"], answer: "Who was studied, how, and what is still uncertain", sourceTitle: "NIH ORWH · Strategic Plan for Research on the Health of Women 2024–2028", sourceURL: URL(string: "https://orwh.od.nih.gov/about/strategic-plan")!, keywords: ["Study population", "Sex", "Gender", "Evidence limits"])
+        CourseLesson(title: "How women’s health research works", explanation: "A women-centered research lens asks how biological, behavioral, social, structural, and environmental factors interact across the life course. Sex and gender are distinct concepts, and study populations and methods affect what findings can tell us.", example: "A study in one age group or population may not answer the same question for everyone. Good evidence states who was studied and what remains uncertain.", prompt: "What should you check when reading a health claim?", options: ["Who was studied, how, and what is still uncertain", "Only whether the headline sounds confident", "Whether one finding applies to every person"], answer: "Who was studied, how, and what is still uncertain", sourceTitle: "NIH ORWH · Strategic Plan for Research on the Health of Women 2024–2028", sourceURL: URL(string: "https://orwh.od.nih.gov/about/strategic-plan")!, keywords: ["Study population", "Sex", "Gender", "Evidence limits"]),
+        CourseLesson(title: "Anxiety in women: patterns and context", explanation: "Anxiety disorders include several conditions, such as generalized anxiety, panic disorder, and phobias. Population studies find some anxiety disorders more often diagnosed in women, but biology, exposure to stressors, social context, and help-seeking all shape observed patterns. Differences do not explain any one person’s experience.", example: "A fast heartbeat can accompany anxiety, exercise, illness, or other states. Body sensations are real but do not identify a diagnosis by themselves.", prompt: "Why can anxiety look different across people?", options: ["Multiple conditions and contexts shape experience", "One symptom always reveals the cause", "Every person has the same trigger"], answer: "Multiple conditions and contexts shape experience", sourceTitle: "NIMH · Anxiety Disorders; NIMH · Women and Mental Health", sourceURL: URL(string: "https://www.nimh.nih.gov/health/topics/anxiety-disorders")!, keywords: ["Anxiety disorder", "Panic", "Context"]),
+        CourseLesson(title: "Depression across women’s lives", explanation: "Depression can affect people at any age and involves more than feeling sad. It may change interest, concentration, energy, sleep, appetite, and physical experience. Hormonal transitions can be relevant for some women, but depression has multiple contributing pathways and is treatable.", example: "A history of symptoms, duration, impact, health conditions, and life circumstances helps a qualified professional understand the picture better than a single online quiz.", prompt: "Which is a careful way to understand depression?", options: ["Consider patterns, impact, health, and context", "Assume it is only a hormone problem", "Use one symptom as proof"], answer: "Consider patterns, impact, health, and context", sourceTitle: "NIMH · Depression in Women", sourceURL: URL(string: "https://www.nimh.nih.gov/health/publications/depression-in-women")!, keywords: ["Depression", "Anhedonia", "Life course"]),
+        CourseLesson(title: "ADHD in girls and women", explanation: "ADHD is a neurodevelopmental condition, and research on girls and women has historically been limited. Some girls show less disruptive or more inattentive difficulties, which may be overlooked; findings vary across samples, and no presentation applies to everyone. Diagnosis relies on developmental history and functional impact.", example: "A student who is quiet but consistently loses track of tasks may need support just as much as someone whose difficulties are more visible.", prompt: "Why might ADHD be missed in some girls?", options: ["Less overt difficulties can receive less attention", "Girls cannot have ADHD", "One attention lapse confirms ADHD"], answer: "Less overt difficulties can receive less attention", sourceTitle: "Hinshaw et al. · Annual Research Review: ADHD in Girls and Women", sourceURL: URL(string: "https://pubmed.ncbi.nlm.nih.gov/34231220/")!, keywords: ["ADHD", "Inattention", "Under-recognition"]),
+        CourseLesson(title: "ADHD, executive function, and daily life", explanation: "Executive functions support planning, working memory, starting tasks, shifting attention, and regulating actions. These skills are used by everyone and can be affected by ADHD, sleep, stress, mood, and other factors. Research on hormones and ADHD symptoms in females is emerging, with important gaps and uncertainty.", example: "A calendar or reminder can be a useful support for many people; needing a tool does not establish a diagnosis or measure effort.", prompt: "What is an executive function?", options: ["A mental process supporting planning or task management", "A hormone unique to women", "A measure of intelligence"], answer: "A mental process supporting planning or task management", sourceTitle: "NIMH · ADHD; SAGE Journals · ADHD and Sex Hormones in Females: A Systematic Review", sourceURL: URL(string: "https://www.nimh.nih.gov/health/topics/attention-deficit-hyperactivity-disorder-adhd")!, keywords: ["Executive function", "Working memory", "Research gap"]),
+        CourseLesson(title: "Panic and the body’s alarm response", explanation: "A panic attack is a sudden episode of intense fear or discomfort that can include strong physical sensations. Panic symptoms can feel alarming, but other health conditions may produce similar sensations. Panic disorder involves recurrent unexpected attacks and related ongoing concern or changes in behavior, assessed by professionals.", example: "Learning how the nervous system responds to threat can make sensations less mysterious, while new or severe physical symptoms still deserve appropriate medical attention.", prompt: "Does one panic-like episode diagnose panic disorder?", options: ["No; assessment considers recurrence, impact, and other explanations", "Yes, always", "Only if it happens at night"], answer: "No; assessment considers recurrence, impact, and other explanations", sourceTitle: "NIMH · Panic Disorder: When Fear Overwhelms", sourceURL: URL(string: "https://www.nimh.nih.gov/health/publications/panic-disorder-when-fear-overwhelms")!, keywords: ["Panic attack", "Threat response", "Physical sensation"]),
+        CourseLesson(title: "OCD: obsessions and compulsions", explanation: "Obsessive-compulsive disorder involves unwanted, recurring thoughts or urges and/or repetitive behaviors or mental acts that can be difficult to control and interfere with life. Everyday preferences for neatness are not the same thing. OCD can affect people of any gender, and symptoms are treatable.", example: "A person’s private rituals cannot be judged from a stereotype. Clinicians look at distress, time, impact, and the pattern of obsessions and compulsions.", prompt: "What distinguishes OCD from simply liking order?", options: ["Distress, repetition, and interference can be part of the condition", "Any preference for tidiness is OCD", "OCD only affects women"], answer: "Distress, repetition, and interference can be part of the condition", sourceTitle: "NIMH · Obsessive-Compulsive Disorder", sourceURL: URL(string: "https://www.nimh.nih.gov/health/topics/obsessive-compulsive-disorder-ocd")!, keywords: ["Obsession", "Compulsion", "Functional impact"]),
+        CourseLesson(title: "Eating disorders and body image", explanation: "Eating disorders are serious mental illnesses that can affect people of any body size, age, or gender. They involve disturbances in eating behavior and related thoughts or emotions, and may affect the heart, bones, digestion, and mental health. Social pressures can shape risk but do not cause every case.", example: "A person’s appearance cannot confirm or rule out an eating disorder. Compassionate, qualified care matters, and recovery is possible.", prompt: "Can appearance alone identify an eating disorder?", options: ["No, appearance cannot confirm or rule it out", "Yes, body size is enough", "Only in teenagers"], answer: "No, appearance cannot confirm or rule it out", sourceTitle: "NIMH · Eating Disorders: What You Need to Know", sourceURL: URL(string: "https://www.nimh.nih.gov/health/topics/eating-disorders")!, keywords: ["Eating disorder", "Body image", "Medical effects"]),
+        CourseLesson(title: "Trauma, PTSD, and recovery", explanation: "Trauma is not one uniform experience, and people respond in different ways. Some develop post-traumatic stress disorder, which can involve intrusive memories, avoidance, changes in mood or thinking, and heightened arousal. Support, safety, culture, and access to evidence-based care affect recovery.", example: "A trauma-informed approach offers choice and avoids pressuring someone to share details. Learning about trauma never requires disclosing personal experiences.", prompt: "Does everyone exposed to trauma develop PTSD?", options: ["No; responses differ and many do not develop PTSD", "Yes, inevitably", "Only people who talk about it"], answer: "No; responses differ and many do not develop PTSD", sourceTitle: "NIMH · Post-Traumatic Stress Disorder", sourceURL: URL(string: "https://www.nimh.nih.gov/health/topics/post-traumatic-stress-disorder-ptsd")!, keywords: ["Trauma", "PTSD", "Trauma-informed care"]),
+        CourseLesson(title: "Bipolar disorder: mood episodes", explanation: "Bipolar disorders involve episodes of depression and mania or hypomania, with changes in mood, activity, energy, sleep, and judgment that differ from ordinary ups and downs. The condition affects people of all genders. Diagnosis depends on the pattern over time and careful clinical assessment.", example: "A productive day or a mood shift is not mania by itself. Describing sleep, energy, behavior, duration, and impact can support a clinical evaluation.", prompt: "What is central to understanding bipolar disorder?", options: ["Distinct mood episodes assessed over time", "Any mood change", "A single personality trait"], answer: "Distinct mood episodes assessed over time", sourceTitle: "NIMH · Bipolar Disorder", sourceURL: URL(string: "https://www.nimh.nih.gov/health/topics/bipolar-disorder")!, keywords: ["Bipolar disorder", "Mania", "Mood episode"]),
+        CourseLesson(title: "Psychosis and careful language", explanation: "Psychosis refers to experiences such as hallucinations or delusions that affect how a person interprets reality; it is a symptom that can occur in different conditions. It is not a synonym for violence or a split personality. Early, respectful assessment can help identify causes and support.", example: "Sleep loss, medications, substances, and medical or mental-health conditions can all matter. A clinician evaluates the whole situation rather than relying on a label.", prompt: "What does psychosis describe?", options: ["A group of experiences affecting reality testing", "A synonym for violence", "A personality type"], answer: "A group of experiences affecting reality testing", sourceTitle: "NIMH · Understanding Psychosis", sourceURL: URL(string: "https://www.nimh.nih.gov/health/publications/understanding-psychosis")!, keywords: ["Psychosis", "Hallucination", "Delusion"]),
+        CourseLesson(title: "Perinatal mental health", explanation: "Mental health concerns can begin or continue during pregnancy and after birth. Perinatal depression and anxiety are not personal failures, and they are different from short-lived mood changes many people experience after delivery. Support, medical history, stress, sleep, and access to care all matter.", example: "This topic applies whether or not someone plans to become a parent. Learning the terms helps reduce stigma and makes it easier to recognize when support may be useful.", prompt: "Is perinatal depression a personal failure?", options: ["No; it is a health condition with multiple influences", "Yes", "It only happens when someone is a first-time parent"], answer: "No; it is a health condition with multiple influences", sourceTitle: "NIMH · Perinatal Depression", sourceURL: URL(string: "https://www.nimh.nih.gov/health/publications/perinatal-depression")!, keywords: ["Perinatal", "Postpartum", "Depression"]),
+        CourseLesson(title: "PMDD and the menstrual cycle", explanation: "Premenstrual dysphoric disorder is a severe cyclical mood disorder linked to the luteal phase for some people. It is not simply “being hormonal”; researchers study heightened sensitivity to normal hormone fluctuations. Diagnosis involves a repeated pattern and meaningful impairment, not one difficult month.", example: "Tracking symptoms over time is sometimes used in clinical evaluation, but notes are optional and should never become a self-diagnosis score.", prompt: "What matters when evaluating possible PMDD?", options: ["A recurring cycle-linked pattern and impact", "One mood change", "A single blood hormone level"], answer: "A recurring cycle-linked pattern and impact", sourceTitle: "ACOG · Management of Premenstrual Disorders; NIMH · Women and Mental Health", sourceURL: URL(string: "https://www.acog.org/clinical/clinical-guidance/clinical-practice-guideline/articles/2023/12/management-of-premenstrual-disorders")!, keywords: ["PMDD", "Luteal phase", "Symptom pattern"]),
+        CourseLesson(title: "Menopause, sleep, and mood", explanation: "During perimenopause, changing hormone patterns and symptoms such as hot flashes or disrupted sleep may affect mood and concentration. Depression and anxiety can also occur for reasons unrelated to menopause. Research supports attention to both physical symptoms and mental-health history rather than attributing everything to hormones.", example: "A timeline of sleep, mood, and life events can help frame a discussion with a health professional without assigning a cause in advance.", prompt: "What is a balanced interpretation of mood changes at menopause?", options: ["Hormones may matter, alongside sleep, history, and context", "Hormones explain every experience", "Mood cannot change during menopause"], answer: "Hormones may matter, alongside sleep, history, and context", sourceTitle: "NIMH · Women and Mental Health; Office on Women’s Health · Menopause Basics", sourceURL: URL(string: "https://www.nimh.nih.gov/health/topics/women-and-mental-health")!, keywords: ["Perimenopause", "Mood", "Sleep"]),
+        CourseLesson(title: "Chronic stress and the body", explanation: "Stress responses involve brain networks, the autonomic nervous system, and hormones such as cortisol. These systems help respond to demands, but prolonged or repeated stress can affect sleep, attention, mood, and physical health. Structural pressures and safety are part of the context, not personal weakness.", example: "Breathing or grounding exercises may help some people feel steadier in the moment; they do not remove an unsafe situation or replace needed care.", prompt: "What can shape a stress response?", options: ["Biology and the conditions around a person", "Willpower alone", "Cortisol only"], answer: "Biology and the conditions around a person", sourceTitle: "Office on Women’s Health · Stress and Your Health; OpenStax · Anatomy & Physiology 2e, Ch. 17", sourceURL: URL(string: "https://womenshealth.gov/mental-health/good-mental-health/stress-and-your-health")!, keywords: ["Autonomic nervous system", "Cortisol", "Chronic stress"]),
+        CourseLesson(title: "Substance use and women’s health", explanation: "Alcohol, nicotine, cannabis, and other substances can affect mood, sleep, attention, and physical health. Risks and effects depend on the substance, amount, age, health, medications, and circumstances. Shame can discourage support; substance-use disorders are health conditions, not moral failures.", example: "Mixing substances or combining them with medication can be dangerous. Questions about personal use are best discussed confidentially with a qualified professional.", prompt: "What influences the effects of a substance?", options: ["Substance, amount, health, and context", "Gender alone", "The person’s character"], answer: "Substance, amount, health, and context", sourceTitle: "NIMH · Substance Use and Co-Occurring Mental Disorders", sourceURL: URL(string: "https://www.nimh.nih.gov/health/topics/substance-use-and-mental-health")!, keywords: ["Substance use", "Co-occurring conditions", "Stigma"]),
+        CourseLesson(title: "Relationships, safety, and mental health", explanation: "Respectful relationships can support well-being; coercion, harassment, or violence can harm mental and physical health. These experiences are never the survivor’s fault. A person’s safety, privacy, and choices matter, and support should be offered without pressure or blame.", example: "A learning app should not ask users to disclose abuse. If the topic feels personal, users can skip reflection and reach out to a trusted adult or professional.", prompt: "What should a supportive response prioritize?", options: ["The person’s safety, privacy, and choices", "Pressuring them to share details", "Assigning blame"], answer: "The person’s safety, privacy, and choices", sourceTitle: "Office on Women’s Health · Violence Against Women", sourceURL: URL(string: "https://womenshealth.gov/relationships-and-safety")!, keywords: ["Safety", "Coercion", "Support"]),
+        CourseLesson(title: "Social context and women’s mental health", explanation: "Mental health is shaped by biology and by social conditions such as discrimination, poverty, housing, caregiving demands, stigma, and access to care. These influences intersect; women are not one uniform group. Research findings depend on who was studied and how sex, gender, race, and other factors were measured.", example: "A finding from one population may not describe another. Asking who participated and what the study could establish is part of scientific literacy.", prompt: "What does an intersectional lens ask?", options: ["How multiple social positions and conditions interact", "Which single factor explains everyone", "Whether social context is irrelevant"], answer: "How multiple social positions and conditions interact", sourceTitle: "NIH Office of Research on Women’s Health · Strategic Plan 2024–2028", sourceURL: URL(string: "https://orwh.od.nih.gov/about/strategic-plan")!, keywords: ["Social determinants", "Intersectionality", "Study population"]),
+        CourseLesson(title: "Evidence-based care and treatment", explanation: "Mental-health care can include psychotherapy, medication, skills-based support, or combinations chosen with a qualified provider. Evidence differs by condition and treatment, and a plan should account for preferences, health history, side effects, and access. Outcomes are not a test of effort or character.", example: "Cognitive behavioral therapy is one researched approach for several conditions, but treatment is collaborative and not one-size-fits-all.", prompt: "What should guide a treatment plan?", options: ["Evidence, health history, preferences, and shared decisions", "A social-media trend", "One method for everyone"], answer: "Evidence, health history, preferences, and shared decisions", sourceTitle: "NIMH · Mental Health Medications; NIMH · Psychotherapies", sourceURL: URL(string: "https://www.nimh.nih.gov/health/topics/mental-health-medications")!, keywords: ["Psychotherapy", "Medication", "Shared decision"]),
+        CourseLesson(title: "Medication, hormones, and research gaps", explanation: "Psychiatric medications can interact with reproductive health, pregnancy, lactation, and other medicines, so decisions need individualized clinical guidance. People should not start, stop, or change prescribed medication based on an app lesson. Researchers continue to study how sex, hormones, and life stage affect medication response.", example: "A clinician can weigh benefits and risks for a specific person. Population-level findings cannot predict an individual response with certainty.", prompt: "What should someone do before changing a prescribed mental-health medicine?", options: ["Discuss it with the prescriber", "Stop suddenly based on an app", "Use another person’s dose"], answer: "Discuss it with the prescriber", sourceTitle: "NIMH · Mental Health Medications; NIH Office of Research on Women’s Health · Women’s Health Research", sourceURL: URL(string: "https://www.nimh.nih.gov/health/topics/mental-health-medications")!, keywords: ["Medication safety", "Life stage", "Evidence gap"]),
+        CourseLesson(title: "When and how to seek support", explanation: "Support can begin with a trusted adult, school counselor, primary-care professional, or mental-health clinician. A person does not need to wait until distress becomes severe to ask questions. If someone may be in immediate danger or unable to stay safe, urgent local help is appropriate.", example: "In the United States, call or text 988 for crisis support; call 911 for immediate danger. This lesson is educational and cannot provide emergency care.", prompt: "What is a useful first step when someone wants help?", options: ["Choose a trusted person or qualified professional to contact", "Wait until things become unbearable", "Use a quiz to diagnose the problem"], answer: "Choose a trusted person or qualified professional to contact", sourceTitle: "SAMHSA · 988 Suicide & Crisis Lifeline; NIMH · Caring for Your Mental Health", sourceURL: URL(string: "https://www.samhsa.gov/find-support/in-crisis")!, keywords: ["Help-seeking", "Trusted adult", "988"])
     ]
 }
 
@@ -455,10 +482,30 @@ private enum BodyCourse {
         CourseLesson(title: "Inside a cell", explanation: "A cell’s membrane separates its internal environment from its surroundings. The cytoplasm contains organelles that carry out specialized tasks; the nucleus stores most of the cell’s DNA. Cell structure varies with function.", example: "A neuron’s long extensions support communication over distance, while epithelial cells form closely packed protective surfaces.", prompt: "Which structure forms a selective boundary around a cell?", options: ["Cell membrane", "Endometrium", "Hair shaft"], answer: "Cell membrane", sourceTitle: "OpenStax · Anatomy & Physiology 2e, Ch. 3", sourceURL: URL(string: "https://openstax.org/books/anatomy-and-physiology-2e/pages/3-introduction")!, keywords: ["Cell membrane", "Cytoplasm", "Organelle", "Nucleus"]),
         CourseLesson(title: "Four tissue families", explanation: "The body’s tissues are commonly grouped as epithelial, connective, muscle, and nervous tissue. Their structures support different functions, from lining surfaces to transmitting signals and producing movement.", example: "Skin contains epithelial tissue at its surface and connective tissue below. Organs combine multiple tissue types.", prompt: "Which tissue family is specialized for contraction?", options: ["Muscle", "Epithelial", "Nervous"], answer: "Muscle", sourceTitle: "OpenStax · Anatomy & Physiology 2e, Ch. 4", sourceURL: URL(string: "https://openstax.org/books/anatomy-and-physiology-2e/pages/4-introduction")!, keywords: ["Tissue", "Epithelial", "Connective", "Nervous"]),
         CourseLesson(title: "Skin, hair, and nails", explanation: "The integumentary system includes skin and its accessory structures, including hair, nails, and glands. It helps form a barrier, senses the environment, and contributes to temperature regulation. Skin has distinct layers with different structures and roles.", example: "Hair follicles sit within the skin; the visible hair shaft is made of keratinized cells. Hair growth varies across body regions and people.", prompt: "Which structures are part of the integumentary system?", options: ["Skin, hair, nails, and associated glands", "Ovaries and uterine tubes", "Heart and blood vessels"], answer: "Skin, hair, nails, and associated glands", sourceTitle: "OpenStax · Anatomy & Physiology 2e, Ch. 5", sourceURL: URL(string: "https://openstax.org/books/anatomy-and-physiology-2e/pages/5-introduction")!, keywords: ["Integumentary system", "Epidermis", "Dermis", "Hair follicle"]),
-        CourseLesson(title: "Hormones and target cells", explanation: "Endocrine glands release hormones into the circulation. A hormone affects cells with compatible receptors, coordinating processes such as growth, metabolism, stress responses, and reproduction. Hormone effects depend on dose, timing, tissue, and feedback.", example: "The same hormone can have different effects in different tissues because receptor expression and local cell responses differ.", prompt: "What makes a cell responsive to a particular hormone?", options: ["A compatible receptor and cellular response machinery", "Its location near the skin", "The presence of any hormone in blood"], answer: "A compatible receptor and cellular response machinery", sourceTitle: "OpenStax · Anatomy & Physiology 2e, §17.1", sourceURL: URL(string: "https://openstax.org/books/anatomy-and-physiology-2e/pages/17-1-an-overview-of-the-endocrine-system")!, keywords: ["Endocrine system", "Hormone", "Receptor", "Target cell"]),
+        CourseLesson(title: "Bones are living tissue", explanation: "Bone is active connective tissue that is continually remodeled by cells that build and break down mineralized matrix. It provides structure, protects organs, stores minerals, and houses marrow. Bone mass develops through childhood and adolescence, making nutrition and movement important well before menopause.", example: "Weight-bearing movement loads bones and signals adaptation. Calcium and vitamin D support bone health, but a single food or supplement cannot replace the full picture.", prompt: "What does bone remodeling mean?", options: ["Bone is continually built and broken down", "Bone never changes after puberty", "Only muscles respond to activity"], answer: "Bone is continually built and broken down", sourceTitle: "OpenStax · Anatomy & Physiology 2e, Ch. 6", sourceURL: URL(string: "https://openstax.org/books/anatomy-and-physiology-2e/pages/6-introduction")!, keywords: ["Bone tissue", "Remodeling", "Bone mass"]),
+        CourseLesson(title: "Muscle, movement, and pelvic support", explanation: "Skeletal muscles create movement and help stabilize joints. Smooth muscle moves material through organs, while cardiac muscle powers the heart. The pelvic floor is a group of muscles and connective tissues that support pelvic organs and contribute to bladder, bowel, and sexual function.", example: "Pelvic floor symptoms can have different causes, including muscles that are weak or overly tense. A symptom alone cannot identify which pattern is present.", prompt: "What is one role of the pelvic floor?", options: ["Support pelvic organs and contribute to continence", "Produce ovarian hormones", "Filter blood into urine"], answer: "Support pelvic organs and contribute to continence", sourceTitle: "OpenStax · Anatomy & Physiology 2e, Ch. 10; Office on Women’s Health · Pelvic floor disorders", sourceURL: URL(string: "https://openstax.org/books/anatomy-and-physiology-2e/pages/10-introduction")!, keywords: ["Skeletal muscle", "Pelvic floor", "Continence"]),
+        CourseLesson(title: "The nervous system: signals and senses", explanation: "The nervous system gathers sensory information, integrates it, and coordinates responses. The brain and spinal cord form the central nervous system; nerves connect them with the rest of the body. Hormones and neural signals interact, shaping sleep, temperature, pain, attention, and reproductive function.", example: "A nerve signal can rapidly change muscle activity, while an endocrine signal may influence tissues over a longer interval.", prompt: "Which structures make up the central nervous system?", options: ["Brain and spinal cord", "Heart and blood vessels", "Ovaries and uterus"], answer: "Brain and spinal cord", sourceTitle: "OpenStax · Anatomy & Physiology 2e, Ch. 12", sourceURL: URL(string: "https://openstax.org/books/anatomy-and-physiology-2e/pages/12-introduction")!, keywords: ["Central nervous system", "Peripheral nervous system", "Neural signal"]),
+        CourseLesson(title: "Endocrine signals beyond reproduction", explanation: "The endocrine system coordinates many processes, not only reproduction. Thyroid hormones influence energy use and development; insulin helps regulate blood glucose; adrenal hormones participate in stress responses. Hormone concentrations vary, and symptoms such as fatigue can have many possible explanations.", example: "A thyroid condition may affect several body systems. A clinician uses history, examination, and sometimes laboratory testing rather than symptoms alone.", prompt: "Which statement about hormones is accurate?", options: ["Hormones influence many body systems", "Only ovaries make hormones", "One symptom identifies a hormone disorder"], answer: "Hormones influence many body systems", sourceTitle: "OpenStax · Anatomy & Physiology 2e, Ch. 17", sourceURL: URL(string: "https://openstax.org/books/anatomy-and-physiology-2e/pages/17-introduction")!, keywords: ["Thyroid hormone", "Insulin", "Endocrine signal"]),
+        CourseLesson(title: "Blood, iron, and oxygen delivery", explanation: "Blood transports oxygen, nutrients, hormones, immune cells, and waste products. Red blood cells use hemoglobin to carry oxygen; iron is part of hemoglobin. Menstrual blood loss can contribute to iron deficiency for some people, but low energy has many causes and needs context.", example: "Iron deficiency is evaluated with a health history and appropriate tests. Taking iron without guidance can be harmful, so symptoms are a reason to seek reliable advice, not self-prescribe.", prompt: "What does hemoglobin do?", options: ["Helps red blood cells carry oxygen", "Builds the uterine lining", "Triggers ovulation"], answer: "Helps red blood cells carry oxygen", sourceTitle: "OpenStax · Anatomy & Physiology 2e, Ch. 20; NIH Office of Dietary Supplements · Iron", sourceURL: URL(string: "https://openstax.org/books/anatomy-and-physiology-2e/pages/20-introduction")!, keywords: ["Blood", "Hemoglobin", "Iron deficiency"]),
+        CourseLesson(title: "The heart and circulation", explanation: "The heart pumps blood through pulmonary and systemic circuits. Blood vessels distribute oxygen and nutrients and help regulate pressure and heat exchange. Cardiovascular risk reflects interacting factors such as blood pressure, cholesterol, diabetes, smoking, family history, and pregnancy-related conditions.", example: "Pregnancy complications such as hypertensive disorders can matter to cardiovascular history later in life; they are one part of a broader risk profile.", prompt: "What is one function of blood vessels?", options: ["Distribute blood and help regulate circulation", "Make all reproductive hormones", "Store air for breathing"], answer: "Distribute blood and help regulate circulation", sourceTitle: "OpenStax · Anatomy & Physiology 2e, Ch. 19; NHLBI · Coronary Heart Disease in Women", sourceURL: URL(string: "https://www.nhlbi.nih.gov/health/coronary-heart-disease/women")!, keywords: ["Cardiovascular system", "Blood pressure", "Risk factor"]),
+        CourseLesson(title: "Breathing and oxygen exchange", explanation: "The respiratory system moves air to the lungs, where oxygen enters blood and carbon dioxide leaves it. Breathing is coordinated with circulation so tissues receive oxygen. Asthma and other lung conditions can affect people differently, and environmental exposures also shape respiratory health.", example: "During exercise, breathing and heart rate usually rise together to meet increased oxygen demand. A change in breathing can have many causes.", prompt: "Where does oxygen move into the blood?", options: ["Across tiny air sacs in the lungs", "Inside the stomach", "Within the bladder"], answer: "Across tiny air sacs in the lungs", sourceTitle: "OpenStax · Anatomy & Physiology 2e, Ch. 22", sourceURL: URL(string: "https://openstax.org/books/anatomy-and-physiology-2e/pages/22-introduction")!, keywords: ["Respiratory system", "Alveoli", "Gas exchange"]),
+        CourseLesson(title: "Digestion, energy, and nourishment", explanation: "Digestion breaks food into molecules that can be absorbed and used by cells. The gastrointestinal tract works with the liver, pancreas, and other organs to process nutrients and regulate metabolism. Nutrient needs change with age, activity, health, and life stage; no single eating pattern fits everyone.", example: "Iron, calcium, protein, and other nutrients support different functions. Food access, culture, preferences, and medical needs all matter when discussing nutrition.", prompt: "What happens during digestion?", options: ["Food is broken into absorbable molecules", "The lungs filter nutrients", "The ovaries make digestive enzymes"], answer: "Food is broken into absorbable molecules", sourceTitle: "OpenStax · Anatomy & Physiology 2e, Ch. 23", sourceURL: URL(string: "https://openstax.org/books/anatomy-and-physiology-2e/pages/23-introduction")!, keywords: ["Digestion", "Absorption", "Nutrient"]),
+        CourseLesson(title: "Immune defense and inflammation", explanation: "The immune system includes barriers, cells, tissues, and signaling molecules that help defend against pathogens and coordinate repair. Inflammation is part of this response, but persistent or misdirected immune activity can contribute to disease. Autoimmune conditions are more common in women for several, still-studied reasons.", example: "Inflammation is not itself a diagnosis. Researchers study genes, hormones, environment, and immune regulation to explain differences between populations.", prompt: "What is inflammation?", options: ["A coordinated part of immune response and repair", "Always a bacterial infection", "A synonym for an allergy"], answer: "A coordinated part of immune response and repair", sourceTitle: "OpenStax · Anatomy & Physiology 2e, Ch. 21; NIH MedlinePlus · Autoimmune Diseases", sourceURL: URL(string: "https://openstax.org/books/anatomy-and-physiology-2e/pages/21-introduction")!, keywords: ["Immune system", "Inflammation", "Autoimmune"]),
+        CourseLesson(title: "Kidneys, bladder, and pelvic health", explanation: "The kidneys filter blood, balance water and electrolytes, and produce urine. The bladder stores urine until it is released through the urethra. The urinary tract is anatomically distinct from the reproductive tract, though nearby structures and pelvic floor muscles can affect how symptoms are experienced.", example: "Burning, urgency, leakage, or pelvic pain can have different causes. Recurrent or severe symptoms deserve professional evaluation rather than assumptions about hygiene.", prompt: "Which organ stores urine before urination?", options: ["Bladder", "Uterus", "Ovary"], answer: "Bladder", sourceTitle: "OpenStax · Anatomy & Physiology 2e, Ch. 25; Office on Women’s Health · Urinary Tract Infections", sourceURL: URL(string: "https://womenshealth.gov/a-z-topics/urinary-tract-infections")!, keywords: ["Kidney", "Bladder", "Pelvic floor"]),
         CourseLesson(title: "Reproductive anatomy", explanation: "The ovarian reproductive system includes ovaries, uterine tubes, uterus, cervix, vagina, and external genital structures called the vulva. Their structures have distinct roles. Anatomy varies, and reproductive anatomy does not determine a person’s gender identity.", example: "An oocyte released from an ovary may enter a uterine tube. The uterus has a muscular wall and an endometrium that changes over the cycle.", prompt: "Where does an oocyte typically enter after ovulation?", options: ["Uterine tube", "Urethra", "Cervical canal"], answer: "Uterine tube", sourceTitle: "OpenStax · Anatomy & Physiology 2e, §27.2", sourceURL: URL(string: "https://openstax.org/books/anatomy-and-physiology-2e/pages/27-2-anatomy-and-physiology-of-the-ovarian-reproductive-system")!, keywords: ["Ovary", "Oocyte", "Uterine tube", "Uterus"]),
         CourseLesson(title: "The ovarian and uterine cycles", explanation: "The ovarian cycle describes follicle development and ovulation; the uterine cycle describes changes in the endometrium. These cycles are coordinated by hormones, but cycle length and bleeding patterns vary between people and across time.", example: "The first day of menstrual bleeding is counted as day one of a cycle. A 28-day cycle is a teaching reference, not a universal schedule.", prompt: "Which event marks day one of a menstrual cycle?", options: ["The onset of menstrual bleeding", "Ovulation in every cycle", "The midpoint of a 28-day calendar"], answer: "The onset of menstrual bleeding", sourceTitle: "OpenStax · Anatomy & Physiology 2e, §27.2", sourceURL: URL(string: "https://openstax.org/books/anatomy-and-physiology-2e/pages/27-2-anatomy-and-physiology-of-the-ovarian-reproductive-system")!, keywords: ["Ovarian cycle", "Uterine cycle", "Ovulation", "Endometrium"]),
-        CourseLesson(title: "Hormone feedback across the cycle", explanation: "The hypothalamus and pituitary communicate with the ovaries through GnRH, FSH, and LH. Ovarian hormones then affect reproductive tissues and feed back to the brain and pituitary. A mid-cycle LH surge usually triggers ovulation, though timing varies.", example: "Follicular and luteal phases describe ovarian events; menses, proliferative, and secretory phases describe the uterine lining.", prompt: "What does the mid-cycle LH surge usually trigger?", options: ["Ovulation", "Menstruation in every cycle", "The start of puberty"], answer: "Ovulation", sourceTitle: "OpenStax · Anatomy & Physiology 2e, §27.2", sourceURL: URL(string: "https://openstax.org/books/anatomy-and-physiology-2e/pages/27-2-anatomy-and-physiology-of-the-ovarian-reproductive-system")!, keywords: ["Hypothalamus", "FSH", "LH surge", "Progesterone"])
+        CourseLesson(title: "Hormone feedback across the cycle", explanation: "The hypothalamus and pituitary communicate with the ovaries through GnRH, FSH, and LH. Ovarian hormones then affect reproductive tissues and feed back to the brain and pituitary. A mid-cycle LH surge usually triggers ovulation, though timing varies.", example: "Follicular and luteal phases describe ovarian events; menses, proliferative, and secretory phases describe the uterine lining.", prompt: "What does the mid-cycle LH surge usually trigger?", options: ["Ovulation", "Menstruation in every cycle", "The start of puberty"], answer: "Ovulation", sourceTitle: "OpenStax · Anatomy & Physiology 2e, §27.2", sourceURL: URL(string: "https://openstax.org/books/anatomy-and-physiology-2e/pages/27-2-anatomy-and-physiology-of-the-ovarian-reproductive-system")!, keywords: ["Hypothalamus", "FSH", "LH surge", "Progesterone"]),
+        CourseLesson(title: "Puberty and body development", explanation: "Puberty is a sequence of changes coordinated by brain and endocrine signals. Timing and pace vary; breast development, body hair, growth, skin changes, and menstruation do not begin on one universal schedule. Puberty education helps distinguish common variation from questions worth discussing with a trusted clinician.", example: "Menstrual cycles can be irregular in the first years after the first period while the hormone-signaling system matures.", prompt: "Which statement about puberty is most accurate?", options: ["Timing and pace vary between individuals", "Everyone develops on the same calendar", "Menstruation begins at the same age for everyone"], answer: "Timing and pace vary between individuals", sourceTitle: "ACOG · Your Changing Body: Puberty in Girls", sourceURL: URL(string: "https://www.acog.org/womens-health/faqs/your-changing-body-puberty-in-girls")!, keywords: ["Puberty", "Menarche", "Development"]),
+        CourseLesson(title: "Periods and cycle patterns", explanation: "A menstrual cycle is counted from the first day of one period to the first day of the next. Bleeding, cramps, and cycle length vary, especially in adolescence. Tracking dates and how symptoms affect daily life can help describe a pattern, but a calendar app cannot identify its cause.", example: "The 28-day cycle is a teaching example, not a target everyone should match. Repeated major changes or disruptive symptoms are reasonable to discuss with a clinician.", prompt: "When does a new menstrual cycle begin?", options: ["On the first day of bleeding", "At ovulation in every cycle", "On the first day of each month"], answer: "On the first day of bleeding", sourceTitle: "ACOG · Menstruation in Girls and Adolescents", sourceURL: URL(string: "https://www.acog.org/clinical/clinical-guidance/committee-opinion/articles/2015/12/menstruation-in-girls-and-adolescents-using-the-menstrual-cycle-as-a-vital-sign")!, keywords: ["Menstrual cycle", "Menarche", "Cycle interval"]),
+        CourseLesson(title: "PMS, PMDD, and cyclical symptoms", explanation: "Some people notice physical or emotional symptoms before menstruation. Premenstrual syndrome describes recurring symptoms; premenstrual dysphoric disorder is a distinct diagnosis involving severe mood symptoms and functional impact. Researchers study sensitivity to normal hormonal changes; hormone levels are not simply “too high” or “too low.”", example: "A private record of timing and impact can help someone communicate with a professional. It is a reflection tool, not a screening or diagnosis.", prompt: "How is PMDD different from ordinary mood variation?", options: ["It involves a severe cyclical pattern with meaningful impact", "It is any change in mood", "It is diagnosed by measuring one hormone"], answer: "It involves a severe cyclical pattern with meaningful impact", sourceTitle: "ACOG · Management of Premenstrual Disorders", sourceURL: URL(string: "https://www.acog.org/clinical/clinical-guidance/clinical-practice-guideline/articles/2023/12/management-of-premenstrual-disorders")!, keywords: ["PMS", "PMDD", "Cyclical pattern"]),
+        CourseLesson(title: "PCOS: hormones, cycles, and metabolism", explanation: "Polycystic ovary syndrome is a common endocrine condition associated with differences in ovulation and androgen activity. It can involve irregular periods, acne, increased facial or body hair, and metabolic health concerns, but presentations vary. “Polycystic” does not mean every person has ovarian cysts.", example: "Diagnosis uses a clinical assessment and considers other explanations; an ultrasound image or one symptom alone is not enough.", prompt: "What does PCOS affect beyond the ovaries?", options: ["Hormone signaling and sometimes metabolism", "Only the uterus", "Only skin pigmentation"], answer: "Hormone signaling and sometimes metabolism", sourceTitle: "Office on Women’s Health · Polycystic Ovary Syndrome", sourceURL: URL(string: "https://womenshealth.gov/a-z-topics/polycystic-ovary-syndrome")!, keywords: ["PCOS", "Androgen", "Ovulation"]),
+        CourseLesson(title: "Endometriosis and pelvic pain", explanation: "Endometriosis involves tissue similar to the uterine lining growing outside the uterus. It may cause pelvic pain, painful periods, or other symptoms, but symptom intensity does not reliably show how much disease is present. The exact causes remain under study, and diagnosis can take time.", example: "Severe period pain is often normalized. Learning the anatomy and documenting impact can support a clearer conversation with a clinician without self-diagnosing.", prompt: "Where can endometriosis-like lesions occur?", options: ["Outside the uterus, often in the pelvis", "Only inside the uterine cavity", "Only in the ovaries"], answer: "Outside the uterus, often in the pelvis", sourceTitle: "Office on Women’s Health · Endometriosis", sourceURL: URL(string: "https://womenshealth.gov/a-z-topics/endometriosis")!, keywords: ["Endometriosis", "Pelvic pain", "Lesion"]),
+        CourseLesson(title: "Uterine fibroids", explanation: "Fibroids are noncancerous growths arising from the muscular wall of the uterus. Their size, number, and location vary; many cause no symptoms, while others are associated with heavy bleeding, pain, pressure, or anemia. Treatment choices depend on symptoms, anatomy, preferences, and reproductive goals.", example: "Two people with fibroids may have very different experiences. A scan finding needs interpretation alongside symptoms and health history.", prompt: "What are uterine fibroids?", options: ["Noncancerous growths from uterine muscle", "Infections of the ovaries", "A normal phase of menstruation"], answer: "Noncancerous growths from uterine muscle", sourceTitle: "ACOG · Uterine Fibroids", sourceURL: URL(string: "https://www.acog.org/womens-health/faqs/uterine-fibroids")!, keywords: ["Fibroid", "Uterine muscle", "Bleeding"]),
+        CourseLesson(title: "Contraception: comparing methods", explanation: "Contraceptive methods work in different ways and vary in effectiveness, side effects, access, and how often they require action. No method is best for everyone. Most contraceptive methods do not protect against sexually transmitted infections, so pregnancy prevention and infection prevention are separate questions.", example: "A person might compare effectiveness, privacy, convenience, health history, and personal priorities with a qualified provider.", prompt: "Which statement about contraception is correct?", options: ["Methods differ, and no single method suits everyone", "Every method prevents STIs", "One method is best for all bodies"], answer: "Methods differ, and no single method suits everyone", sourceTitle: "Office on Women’s Health · Birth Control Methods", sourceURL: URL(string: "https://womenshealth.gov/a-z-topics/birth-control-methods")!, keywords: ["Contraception", "Effectiveness", "Barrier method"]),
+        CourseLesson(title: "Sexual health, STIs, and HPV", explanation: "Sexual health includes consent, respectful communication, prevention, testing, and access to care. Many sexually transmitted infections can have no noticeable symptoms. HPV is common, and vaccination prevents many HPV-related cancers; screening recommendations still apply to vaccinated people.", example: "Reliable information focuses on prevention and care without stigma. A person’s symptoms or sexual history cannot be inferred from appearance.", prompt: "Can an STI be present without symptoms?", options: ["Yes, some infections may be asymptomatic", "No, every STI is visible", "Only HPV can be asymptomatic"], answer: "Yes, some infections may be asymptomatic", sourceTitle: "CDC · About HPV; Office on Women’s Health · Sexually Transmitted Infections", sourceURL: URL(string: "https://www.cdc.gov/hpv/about/index.html")!, keywords: ["STI", "HPV", "Vaccination"]),
+        CourseLesson(title: "Breast tissue and breast health", explanation: "Breasts contain glandular, connective, and fatty tissue, and their appearance changes across puberty, menstrual cycles, pregnancy, and aging. Most breast changes are not cancer, yet a new or persistent change is worth discussing with a health professional. Screening schedules depend on age and individual risk.", example: "This lesson is about anatomy and evidence, not checking for disease. People can ask a clinician what screening applies to their age and family history.", prompt: "What is a useful principle about breast changes?", options: ["Changes can have many causes; persistent changes merit evaluation", "Every lump is cancer", "Screening recommendations are identical at every age"], answer: "Changes can have many causes; persistent changes merit evaluation", sourceTitle: "Office on Women’s Health · Mammograms", sourceURL: URL(string: "https://womenshealth.gov/a-z-topics/mammograms")!, keywords: ["Breast tissue", "Screening", "Risk"]),
+        CourseLesson(title: "Pregnancy, postpartum, and body systems", explanation: "Pregnancy changes circulation, breathing, digestion, kidney function, and endocrine signaling as the body supports fetal development. Recovery after birth also involves physical and hormonal transitions. These experiences vary widely, and pregnancy or parenting is not universal to womanhood.", example: "Postpartum health includes physical recovery and mental well-being. A new or worsening concern can be discussed with a clinician; this lesson is a body-systems overview.", prompt: "Which statement best describes pregnancy physiology?", options: ["Multiple body systems adapt over time", "Only the uterus changes", "Every pregnancy follows the same course"], answer: "Multiple body systems adapt over time", sourceTitle: "OpenStax · Anatomy & Physiology 2e, §28.4; Office on Women’s Health · Pregnancy Body Changes", sourceURL: URL(string: "https://womenshealth.gov/pregnancy/youre-pregnant-now-what/body-changes-and-discomforts")!, keywords: ["Pregnancy", "Postpartum", "Physiological adaptation"]),
+        CourseLesson(title: "Menopause and health across the lifespan", explanation: "Menopause is reached after 12 months without a menstrual period; perimenopause is the transition leading up to it. Hormone changes can affect temperature regulation, sleep, bones, bladder tissues, and mood. Symptoms and timing differ, and research continues to examine long-term effects and treatment choices.", example: "Menopause is a life stage, not a disease. Learning terms and body systems can help people discuss symptoms and options with a clinician.", prompt: "What marks menopause retrospectively?", options: ["Twelve months without a period", "One skipped cycle", "A single hormone test"], answer: "Twelve months without a period", sourceTitle: "Office on Women’s Health · Menopause Basics", sourceURL: URL(string: "https://womenshealth.gov/menopause/menopause-basics")!, keywords: ["Perimenopause", "Menopause", "Estrogen"])
     ]
 }
 
@@ -720,6 +767,7 @@ private struct LearningPathView: View {
     }
     private func isUnlocked(_ number: Int) -> Bool {
         if number == 1 { return true }
+        if number <= track.demoLessonUnlockLimit { return true }
         if number == 2 && placementPassedTrack == track.rawValue { return true }
         return completedIDs.contains("\(track.rawValue).\(String(format: "%02d", number - 1))")
     }
@@ -779,27 +827,24 @@ private struct LearningPathView: View {
                         }
                     }
 
-                    if completedIDs.contains("\(track.rawValue).10") {
-                        NavigationLink {
-                            CourseReviewQuizView(track: track)
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: "rosette")
-                                    .font(.system(size: 20)).foregroundStyle(Palette.gold)
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(track == .body ? "Unit 1 · Body foundations" : "Unit 1 · Mind & body")
-                                        .font(.system(size: 14, weight: .bold, design: .rounded)).foregroundStyle(Palette.ink)
-                                    Text("10-question mastery quiz")
-                                        .font(.system(size: 11, design: .rounded)).foregroundStyle(Palette.muted)
+                    VStack(alignment: .leading, spacing: 9) {
+                        ForEach(1...3, id: \.self) { unit in
+                            let milestone = unit * 10
+                            let unlocked = completedIDs.contains("\(track.rawValue).\(String(format: "%02d", milestone))")
+                            if unlocked {
+                                NavigationLink {
+                                    CourseReviewQuizView(track: track, unitNumber: unit)
+                                } label: {
+                                    unitQuizCard(unit: unit, track: track)
                                 }
-                                Spacer()
-                                Image(systemName: "arrow.right").foregroundStyle(Palette.coral)
+                                .buttonStyle(.plain)
+                            } else {
+                                Label(unitTitle(unit, track: track), systemImage: "lock.fill")
+                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(Palette.muted)
+                                    .padding(.top, 4)
                             }
-                            .padding(15).background(.white, in: RoundedRectangle(cornerRadius: 16))
-                        }.buttonStyle(.plain)
-                    } else {
-                        Label(track == .body ? "Unit 1 · Body foundations" : "Unit 1 · Mind & body", systemImage: "lock.fill")
-                            .font(.system(size: 12, weight: .semibold, design: .rounded)).foregroundStyle(Palette.muted).padding(.top, 4)
+                        }
                     }
                 }
                 .padding(22)
@@ -857,6 +902,32 @@ private struct LearningPathView: View {
             Spacer(minLength: 0)
         }
     }
+
+    private func unitTitle(_ unit: Int, track: LearningTrack) -> String {
+        let scope = switch unit {
+        case 1: "Foundations · lessons 1–10"
+        case 2: "Building connections · lessons 1–20"
+        default: "Full course · lessons 1–30"
+        }
+        let course = track == .body ? "Body" : "Mind"
+        return "\(course) review \(unit) · \(scope)"
+    }
+
+    private func unitQuizCard(unit: Int, track: LearningTrack) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "rosette")
+                .font(.system(size: 20)).foregroundStyle(Palette.gold)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(unitTitle(unit, track: track))
+                    .font(.system(size: 13, weight: .bold, design: .rounded)).foregroundStyle(Palette.ink)
+                Text("\(unit * 10)-question cumulative quiz")
+                    .font(.system(size: 11, design: .rounded)).foregroundStyle(Palette.muted)
+            }
+            Spacer()
+            Image(systemName: "arrow.right").foregroundStyle(Palette.coral)
+        }
+        .padding(15).background(.white, in: RoundedRectangle(cornerRadius: 16))
+    }
 }
 
 private struct LearningLessonView: View {
@@ -883,6 +954,7 @@ private struct LearningLessonView: View {
     private var sourceTitle: String { track.sourceTitle(at: lessonNumber) }
     private var sourceURL: URL { track.sourceURL(at: lessonNumber) }
     private var lessonID: String { "\(track.rawValue).\(String(format: "%02d", lessonNumber))" }
+    private var currentUnitNumber: Int { (lessonNumber - 1) / 10 + 1 }
     private var answerIsCorrect: Bool { selectedAnswer == quizAnswer }
     private var markedExplanation: AttributedString {
         var result = AttributedString(explanation)
@@ -1033,9 +1105,9 @@ private struct LearningLessonView: View {
                             .buttonStyle(.plain)
                         } else {
                             NavigationLink {
-                                CourseReviewQuizView(track: track)
+                                CourseReviewQuizView(track: track, unitNumber: currentUnitNumber)
                             } label: {
-                                lessonActionLabel("Start unit quiz")
+                                lessonActionLabel("Start cumulative review \(currentUnitNumber)")
                             }
                             .buttonStyle(.plain)
                         }
@@ -1197,6 +1269,14 @@ private struct FlashcardDeck: View {
                 .overlay(RoundedRectangle(cornerRadius: 16).stroke(accent.opacity(0.3), lineWidth: 1))
             }
             .buttonStyle(.plain)
+            .accessibilityHint("Swipe left or right to change flashcards; tap to reveal the definition")
+            .simultaneousGesture(DragGesture(minimumDistance: 20).onEnded { value in
+                guard abs(value.translation.width) > 40 else { return }
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    index = value.translation.width < 0 ? (index + 1) % words.count : (index - 1 + words.count) % words.count
+                    revealed = false
+                }
+            })
             HStack {
                 Button { index = (index - 1 + words.count) % words.count; revealed = false } label: {
                     Label("Previous", systemImage: "chevron.left").labelStyle(.titleAndIcon)
@@ -1289,7 +1369,104 @@ private struct FlashcardDeck: View {
             "Hypothalamus": "A brain region that helps regulate endocrine activity, including reproductive hormone signaling.",
             "FSH": "Follicle-stimulating hormone, released by the anterior pituitary and involved in follicular development.",
             "LH surge": "A sharp rise in luteinizing hormone that usually triggers ovulation.",
-            "Progesterone": "A steroid hormone involved in the ovarian cycle and changes in the endometrium."
+            "Progesterone": "A steroid hormone involved in the ovarian cycle and changes in the endometrium.",
+            "Bone tissue": "Living connective tissue that supports the body, protects organs, stores minerals, and houses marrow.",
+            "Remodeling": "The ongoing process in which bone is broken down and rebuilt by specialized cells.",
+            "Bone mass": "The amount of bone tissue; much of peak bone mass develops during childhood and adolescence.",
+            "Skeletal muscle": "Voluntary muscle attached to bones that produces movement and helps stabilize joints.",
+            "Pelvic floor": "Muscles and connective tissues that support pelvic organs and contribute to continence.",
+            "Continence": "The ability to control the release of urine or stool.",
+            "Central nervous system": "The brain and spinal cord, which process information and coordinate responses.",
+            "Peripheral nervous system": "Nerves and ganglia outside the brain and spinal cord that connect the central nervous system with the body.",
+            "Neural signal": "Electrical and chemical communication used by nerve cells to transmit information.",
+            "Thyroid hormone": "Hormones from the thyroid gland that help regulate metabolism, growth, and development.",
+            "Insulin": "A hormone that helps regulate blood glucose by supporting its movement into cells.",
+            "Endocrine signal": "A hormone-based message released into body fluids that influences cells with compatible receptors.",
+            "Blood": "A connective tissue that transports gases, nutrients, hormones, immune cells, and waste products.",
+            "Hemoglobin": "An iron-containing protein in red blood cells that binds and carries oxygen.",
+            "Iron deficiency": "A state in which iron stores are too low to support normal body needs; evaluation requires appropriate clinical context.",
+            "Cardiovascular system": "The heart and blood vessels that circulate blood through the lungs and the rest of the body.",
+            "Blood pressure": "The force of circulating blood against the walls of arteries.",
+            "Risk factor": "A characteristic or exposure associated with a greater likelihood of a health outcome; it does not guarantee that outcome.",
+            "Respiratory system": "Organs and structures that move air and exchange oxygen and carbon dioxide.",
+            "Alveoli": "Tiny air sacs in the lungs where gas exchange with nearby capillaries occurs.",
+            "Gas exchange": "Movement of oxygen into blood and carbon dioxide out of blood across a respiratory surface.",
+            "Digestion": "Mechanical and chemical processes that break food into molecules the body can absorb.",
+            "Absorption": "Movement of digested molecules from the gastrointestinal tract into blood or lymph.",
+            "Nutrient": "A substance in food used for energy, growth, repair, or regulation of body processes.",
+            "Immune system": "Cells, tissues, organs, and signals that help defend the body and coordinate repair.",
+            "Inflammation": "A coordinated immune response to injury or infection that can contribute to defense and repair.",
+            "Autoimmune": "Describes immune activity directed against the body’s own tissues.",
+            "Kidney": "An organ that filters blood, helps regulate fluid and electrolyte balance, and produces urine.",
+            "Bladder": "A hollow muscular organ that stores urine before it leaves the body.",
+            "Puberty": "A developmental process involving hormonal and physical changes that lead toward reproductive maturity.",
+            "Menarche": "The first menstrual period.",
+            "Development": "Changes in body structures and functions over time, shaped by biology and environment.",
+            "Menstrual cycle": "The sequence of ovarian and uterine changes counted from the first day of one period to the first day of the next.",
+            "Cycle interval": "The number of days from the beginning of one menstrual period to the beginning of the next.",
+            "PMS": "Premenstrual syndrome: recurring physical or emotional symptoms before menstruation that vary between people.",
+            "Cyclical pattern": "A change that recurs in relation to a repeating cycle; timing alone does not establish a cause.",
+            "PCOS": "Polycystic ovary syndrome, a condition involving reproductive hormone and ovulation differences that may also affect metabolism.",
+            "Androgen": "A class of hormones that includes testosterone and is present in people of all sexes.",
+            "Endometriosis": "A condition in which tissue similar to the uterine lining grows outside the uterus.",
+            "Pelvic pain": "Pain felt in the lower abdomen or pelvis; it can have many possible causes.",
+            "Lesion": "An area of altered tissue; the term describes a finding and does not specify its cause.",
+            "Fibroid": "A noncancerous growth arising from the muscular wall of the uterus.",
+            "Uterine muscle": "The smooth muscle layer of the uterus, also called the myometrium.",
+            "Contraception": "Methods, medicines, or devices used to reduce the chance of pregnancy.",
+            "Effectiveness": "How well a method achieves its intended outcome under specified conditions of use.",
+            "Barrier method": "A contraceptive method that creates a physical barrier to reduce sperm reaching an egg; some barriers also reduce STI risk.",
+            "STI": "A sexually transmitted infection, which may or may not cause noticeable symptoms.",
+            "HPV": "Human papillomavirus, a common group of viruses; some types can cause cancers and are preventable with vaccination.",
+            "Vaccination": "A way of training the immune system to recognize and respond to a pathogen or its components.",
+            "Breast tissue": "Glandular, fatty, and connective tissue that changes across development and life stages.",
+            "Screening": "Testing people without symptoms to identify possible disease earlier; recommended schedules depend on evidence and risk.",
+            "Pregnancy": "A developmental process in which an embryo and then fetus grow in the uterus.",
+            "Postpartum": "The period after childbirth, involving physical recovery and adjustment that vary from person to person.",
+            "Physiological adaptation": "A change in body function that helps meet new demands or conditions.",
+            "Perimenopause": "The transition leading up to menopause, when menstrual patterns and hormone levels may change.",
+            "Menopause": "The point reached after 12 consecutive months without a menstrual period for a reason other than another cause.",
+            "Estrogen": "A group of steroid hormones involved in reproductive function and effects across many body tissues.",
+            "Anxiety disorder": "A group of conditions involving excessive fear or anxiety that can interfere with daily functioning.",
+            "Panic": "A sudden surge of intense fear or discomfort that may include physical sensations.",
+            "Life course": "A perspective that considers health and development across stages of a person’s life.",
+            "Inattention": "Difficulty sustaining focus, organizing tasks, or following through; it can have many causes.",
+            "Under-recognition": "When a condition or need is less likely to be noticed or identified despite meaningful impact.",
+            "Working memory": "The ability to hold and use a small amount of information briefly while completing a task.",
+            "Research gap": "An unanswered or under-studied question in the available scientific evidence.",
+            "Panic attack": "A sudden episode of intense fear or discomfort that can include strong physical sensations.",
+            "Physical sensation": "A bodily experience such as a racing heart, tension, dizziness, or shortness of breath.",
+            "Obsession": "An unwanted recurring thought, urge, or image associated with distress in OCD.",
+            "Compulsion": "A repetitive behavior or mental act someone feels driven to perform, often in response to distress.",
+            "Eating disorder": "A serious mental illness involving disruptions in eating behavior and related thoughts or emotions.",
+            "Body image": "How a person perceives, thinks, and feels about their body.",
+            "Medical effects": "Changes to physical health that may accompany a condition or its treatment.",
+            "Trauma-informed care": "Care that emphasizes safety, choice, trust, and avoiding unnecessary re-traumatization.",
+            "Bipolar disorder": "A group of mental-health conditions involving episodes of depression and mania or hypomania.",
+            "Mania": "A distinct period of unusually elevated or irritable mood and energy that affects functioning and judgment.",
+            "Mood episode": "A period of significant mood and activity change that differs from a person’s usual pattern.",
+            "Psychosis": "Experiences such as hallucinations or delusions that affect how someone interprets reality.",
+            "Hallucination": "A sensory experience that occurs without an external stimulus, such as hearing a voice others do not hear.",
+            "Delusion": "A strongly held belief that remains despite clear evidence to the contrary.",
+            "Perinatal": "The period during pregnancy and after birth; definitions of its timing may vary by context.",
+            "Luteal phase": "The part of the ovarian cycle after ovulation and before the next period begins.",
+            "Symptom pattern": "How experiences change over time, including their timing, frequency, and impact.",
+            "Memory": "The processes by which information is encoded, stored, and later retrieved.",
+            "Emotional regulation": "Processes used to notice, understand, and respond to emotions.",
+            "Autonomic nervous system": "The part of the nervous system that regulates many automatic functions, including heart rate and digestion.",
+            "Cortisol": "A hormone involved in daily rhythms and the body’s response to demands.",
+            "Chronic stress": "Repeated or prolonged stress exposure that can affect body and mind, with effects shaped by context.",
+            "Substance use": "Use of alcohol, nicotine, medications, or other drugs; effects depend on substance and circumstances.",
+            "Co-occurring conditions": "Two or more health conditions that occur in the same person at the same time.",
+            "Coercion": "Pressure, threats, or force that undermine a person’s ability to choose freely.",
+            "Intersectionality": "A framework for understanding how social identities and systems of power can interact to shape experience.",
+            "Psychotherapy": "Structured psychological treatment delivered by a trained professional.",
+            "Medication": "A substance used to prevent, manage, or treat a health condition.",
+            "Shared decision": "A collaborative process in which a person and clinician consider evidence, preferences, and circumstances.",
+            "Medication safety": "Choosing, using, and monitoring medicines with attention to benefits, risks, interactions, and individual context.",
+            "Help-seeking": "Taking steps to contact a trusted person or qualified professional for support.",
+            "Trusted adult": "A responsible adult a young person feels safe approaching for guidance or help.",
+            "988": "In the United States, call or text 988 to reach the Suicide & Crisis Lifeline."
         ]
         return definitions[term] ?? "A key concept in this lesson. Explore the source to learn more."
     }
@@ -1336,7 +1513,7 @@ private struct ChipmunkCompanionCard: View {
 
     private var chipAge: Int {
         let lessons = completedLessonIDs.split(separator: ",").count
-        return min(100, 16 + lessons / 10)
+        return CareProgressRules.age(completedLessonCount: lessons)
     }
     private var coatColor: Color { coats.first(where: { $0.name == coat })?.color ?? Palette.coral }
     private func coatUnlocked(_ option: (name: String, badgeDays: Int, color: Color)) -> Bool { bestCareStreak >= option.badgeDays }
@@ -1429,10 +1606,12 @@ private struct ChipmunkCompanionCard: View {
 
 private struct CourseReviewQuizView: View {
     let track: LearningTrack
+    let unitNumber: Int
     @Environment(\.dismiss) private var dismiss
     @AppStorage("chipmunk.dailyCare") private var dailyCare = 0
     @AppStorage("chipmunk.body.unitQuizComplete") private var bodyQuizComplete = false
     @AppStorage("chipmunk.mind.unitQuizComplete") private var mindQuizComplete = false
+    @AppStorage("chipmunk.completedUnitQuizIDs") private var completedUnitQuizIDs = ""
     @State private var questionIndex = 0
     @State private var selectedAnswer: String?
     @State private var submitted = false
@@ -1440,13 +1619,17 @@ private struct CourseReviewQuizView: View {
     @State private var showingResult = false
     @State private var quizCareEarned = 0
 
-    private var answer: String { track.answer(at: questionIndex + 1) }
+    private var questionCount: Int { min(30, max(10, unitNumber * 10)) }
+    private var passingScore: Int { questionCount * 8 / 10 }
+    private var unitLessonNumber: Int { questionIndex + 1 }
+    private var answer: String { track.answer(at: unitLessonNumber) }
     private var correct: Bool { selectedAnswer == answer }
     private var quizComplete: Bool {
-        get { track == .body ? bodyQuizComplete : mindQuizComplete }
-        set {
-            if track == .body { bodyQuizComplete = newValue } else { mindQuizComplete = newValue }
-        }
+        let key = "\(track.rawValue).unit.\(unitNumber)"
+        let completed = Set(completedUnitQuizIDs.split(separator: ",").map(String.init))
+        if completed.contains(key) { return true }
+        if unitNumber == 1 { return track == .body ? bodyQuizComplete : mindQuizComplete }
+        return false
     }
 
     var body: some View {
@@ -1458,16 +1641,16 @@ private struct CourseReviewQuizView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
                         HStack {
-                Text(track == .body ? "UNIT 1 · BODY FOUNDATIONS" : "UNIT 1 · MIND & BODY").font(.system(size: 9, weight: .heavy, design: .rounded)).tracking(1).foregroundStyle(track.color)
+                            Text("CUMULATIVE REVIEW \(unitNumber) · \(track == .body ? "BODY" : "MIND")").font(.system(size: 9, weight: .heavy, design: .rounded)).tracking(1).foregroundStyle(track.color)
                             Spacer()
-                            Text("\(questionIndex + 1) / 10").font(.system(size: 11, weight: .bold, design: .rounded)).foregroundStyle(Palette.muted)
+                            Text("\(questionIndex + 1) / \(questionCount)").font(.system(size: 11, weight: .bold, design: .rounded)).foregroundStyle(Palette.muted)
                         }
-                        ProgressView(value: Double(questionIndex + 1), total: 10).tint(Palette.gold)
-                        Text(track.title(at: questionIndex + 1).uppercased())
+                        ProgressView(value: Double(questionIndex + 1), total: Double(questionCount)).tint(Palette.gold)
+                        Text(track.title(at: unitLessonNumber).uppercased())
                             .font(.system(size: 10, weight: .heavy, design: .rounded)).tracking(0.9).foregroundStyle(Palette.keywordColors[questionIndex % Palette.keywordColors.count])
-                        Text(track.prompt(at: questionIndex + 1))
+                        Text(track.prompt(at: unitLessonNumber))
                             .font(.system(size: 23, weight: .bold, design: .rounded)).foregroundStyle(Palette.ink)
-                        ForEach(track.options(at: questionIndex + 1), id: \.self) { option in
+                        ForEach(track.options(at: unitLessonNumber), id: \.self) { option in
                             Button { if !submitted { selectedAnswer = option } } label: {
                                 HStack(spacing: 10) {
                                     Image(systemName: selectedAnswer == option ? "largecircle.fill.circle" : "circle")
@@ -1482,11 +1665,11 @@ private struct CourseReviewQuizView: View {
                             Text(correct ? "Correct: \(answer)" : "Review: \(answer)")
                                 .font(.system(size: 13, weight: .semibold, design: .rounded))
                                 .foregroundStyle(correct ? Color(red: 0.22, green: 0.42, blue: 0.34) : Palette.coral)
-                            Link(track.sourceTitle(at: questionIndex + 1), destination: track.sourceURL(at: questionIndex + 1))
+                            Link(track.sourceTitle(at: unitLessonNumber), destination: track.sourceURL(at: unitLessonNumber))
                                 .font(.system(size: 11, design: .rounded)).foregroundStyle(Palette.muted)
                         }
                         Button(action: advance) {
-                            Text(submitted ? (questionIndex == 9 ? "See results" : "Next question") : "Check answer")
+                            Text(submitted ? (questionIndex == questionCount - 1 ? "See results" : "Next question") : "Check answer")
                                 .font(.system(size: 15, weight: .bold, design: .rounded)).foregroundStyle(.white)
                                 .frame(maxWidth: .infinity).padding(.vertical, 14).background(Palette.coral, in: Capsule())
                         }.buttonStyle(.plain).disabled(selectedAnswer == nil && !submitted).opacity(selectedAnswer == nil && !submitted ? 0.45 : 1)
@@ -1500,25 +1683,25 @@ private struct CourseReviewQuizView: View {
 
     private var resultView: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Image(systemName: score >= 8 ? "rosette" : "books.vertical.fill")
+            Image(systemName: score >= passingScore ? "rosette" : "books.vertical.fill")
                 .font(.system(size: 32)).foregroundStyle(Palette.gold)
-            Text(score >= 8 ? "Unit mastered" : "Keep building your map")
+            Text(score >= passingScore ? "Review complete" : "Keep building your map")
                 .font(.system(size: 26, weight: .bold, design: .rounded)).foregroundStyle(Palette.ink)
-            Text("\(score) of 10 correct")
+            Text("\(score) of \(questionCount) correct")
                 .font(.system(size: 16, weight: .semibold, design: .rounded)).foregroundStyle(Palette.coral)
-            if score >= 8 {
+            if score >= passingScore {
                 Text(quizCareEarned > 0 ? "Unit complete · +\(quizCareEarned) care for Chip" : "Chip’s daily care meter is full.")
                     .font(.system(size: 13, design: .rounded)).foregroundStyle(Palette.muted)
             }
             Spacer()
             Button {
-                if score >= 8 {
+                if score >= passingScore {
                     dismiss()
                 } else {
                     restart()
                 }
             } label: {
-                Text(score >= 8 ? "Return to course" : "Review and try again")
+                Text(score >= passingScore ? "Return to course" : "Review and try again")
                     .font(.system(size: 15, weight: .bold, design: .rounded)).foregroundStyle(.white)
                     .frame(maxWidth: .infinity).padding(.vertical, 14).background(Palette.coral, in: Capsule())
             }.buttonStyle(.plain)
@@ -1529,12 +1712,12 @@ private struct CourseReviewQuizView: View {
         if !submitted {
             if correct { score += 1 }
             submitted = true
-        } else if questionIndex == 9 {
+        } else if questionIndex == questionCount - 1 {
             DailyRewardLedger.markStudyDay()
-            if score >= 8 && !quizComplete {
+            if score >= passingScore && !quizComplete {
                 quizCareEarned = DailyRewardLedger.awardMastery()
                 dailyCare = UserDefaults.standard.integer(forKey: "chipmunk.dailyCare")
-                if track == .body { bodyQuizComplete = true } else { mindQuizComplete = true }
+                markQuizComplete()
             }
             showingResult = true
         } else {
@@ -1550,6 +1733,16 @@ private struct CourseReviewQuizView: View {
         submitted = false
         score = 0
         showingResult = false
+    }
+
+    private func markQuizComplete() {
+        let key = "\(track.rawValue).unit.\(unitNumber)"
+        var completed = Set(completedUnitQuizIDs.split(separator: ",").map(String.init))
+        completed.insert(key)
+        completedUnitQuizIDs = completed.sorted().joined(separator: ",")
+        if unitNumber == 1 {
+            if track == .body { bodyQuizComplete = true } else { mindQuizComplete = true }
+        }
     }
 }
 
@@ -2155,36 +2348,19 @@ private struct ReferenceLibraryView: View {
 
             ForEach(LearningTrack.allCases) { track in
                 Section {
-                    let secondUnlocked = completedIDs.contains("\(track.rawValue).02")
-                    DisclosureGroup {
-                        ConceptMapDetail(track: track, lessonNumber: 1)
-                        Link(track.sourceTitle, destination: track.sourceURL)
-                            .font(.system(size: 11, design: .rounded))
-                    } label: {
-                        LibraryKeywordRow(lesson: track.firstLesson, words: track.keywords(for: 1), tint: track.color)
-                    }
-                    .listRowBackground(Color.white)
-                    if secondUnlocked {
-                        DisclosureGroup {
-                            ConceptMapDetail(track: track, lessonNumber: 2)
-                            Link(track.secondSourceTitle, destination: track.secondSourceURL)
-                                .font(.system(size: 11, design: .rounded))
-                        } label: {
-                            LibraryKeywordRow(lesson: track.secondLesson, words: track.keywords(for: 2), tint: track.color)
-                        }
-                        .listRowBackground(Color.white)
-                    }
-                    ForEach(3...10, id: \.self) { lessonNumber in
-                            if completedIDs.contains("\(track.rawValue).\(String(format: "%02d", lessonNumber))") {
-                                DisclosureGroup {
-                                    ConceptMapDetail(track: track, lessonNumber: lessonNumber)
-                                    Link(track.sourceTitle(at: lessonNumber), destination: track.sourceURL(at: lessonNumber))
-                                        .font(.system(size: 11, design: .rounded))
-                                } label: {
-                                    LibraryKeywordRow(lesson: track.title(at: lessonNumber), words: track.keywords(for: lessonNumber), tint: track.color)
-                                }
-                                .listRowBackground(Color.white)
+                    ForEach(1...track.lessonCount, id: \.self) { lessonNumber in
+                        let lessonID = "\(track.rawValue).\(String(format: "%02d", lessonNumber))"
+                        let isUnlocked = completedIDs.contains(lessonID) || lessonNumber <= track.demoLessonUnlockLimit
+                        if isUnlocked {
+                            DisclosureGroup {
+                                ConceptMapDetail(track: track, lessonNumber: lessonNumber)
+                                Link(track.sourceTitle(at: lessonNumber), destination: track.sourceURL(at: lessonNumber))
+                                    .font(.system(size: 11, design: .rounded))
+                            } label: {
+                                LibraryKeywordRow(lesson: track.title(at: lessonNumber), words: track.keywords(for: lessonNumber), tint: track.color)
                             }
+                            .listRowBackground(Color.white)
+                        }
                     }
                 }
                 header: {
