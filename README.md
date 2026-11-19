@@ -10,7 +10,7 @@ Chipmunk is a women-centered, science-forward health learning app for ages 16+. 
 - Color-coded, underlined keywords, flip-style vocabulary flashcards, and shared care rewards in both tracks.
 - A cumulative ten-question review quiz after lesson ten in each track.
 - A Collection screen with shared care-streak badges and a named chipmunk companion.
-- A daily-care meter that starts at 0 and measures the share of all five needs refilled today. It reaches 100 only when all five are full. Lessons add 10 to the lowest need, activities add 5, and the unit quiz adds 10; each need halves at the next local day.
+- A daily-care meter that starts at 20 and measures progress refilling all five needs. It reaches 100 only when all five are full. Lessons add 15 to the lowest need, activities add 5, and the unit quiz adds 10; each need halves at the next local day but never falls below 15.
 - Chip starts at age 16 and gains one year per 10 unique lessons completed across both tracks, up to age 100.
 - A day streak based on completing at least one lesson or interactive activity on consecutive local calendar days.
 - Companion accent colors unlocked by earning care-streak badges; lifetime XP and lesson-specific badges are not used.

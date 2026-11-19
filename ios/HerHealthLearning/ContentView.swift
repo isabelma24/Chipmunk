@@ -13,6 +13,7 @@ private enum Palette {
 }
 
 private enum DailyRewardLedger {
+    static let dailyStartingCare = 20
     static let dailyCap = 100
 
     static func beginDay() {
@@ -37,7 +38,7 @@ private enum DailyRewardLedger {
                     let current = needValue(need, defaults: defaults)
                     defaults.set(current, forKey: startKey(for: need))
                 }
-                defaults.set(0, forKey: "chipmunk.dailyCare")
+                defaults.set(dailyStartingCare, forKey: "chipmunk.dailyCare")
             }
             return
         }
@@ -45,7 +46,8 @@ private enum DailyRewardLedger {
         if let previousDay {
             let daysAway = max(1, Calendar.current.dateComponents([.day], from: date(from: previousDay), to: Date()).day ?? 1)
             let previousDailyCare = defaults.integer(forKey: "chipmunk.dailyCare")
-            if daysAway == 1, previousDailyCare > 90 {
+            let studiedPreviousDay = defaults.string(forKey: "chipmunk.lastStudyDay") == previousDay
+            if daysAway == 1, studiedPreviousDay, previousDailyCare > 80 {
                 let previousDate = date(from: previousDay)
                 let dayBeforePrevious = Calendar.current.date(byAdding: .day, value: -1, to: previousDate) ?? previousDate
                 let lastCareDay = defaults.string(forKey: "chipmunk.lastCareBadgeDay") ?? ""
@@ -58,7 +60,8 @@ private enum DailyRewardLedger {
             }
             for need in CompanionNeed.allCases {
                 let stored = needValue(need, defaults: defaults)
-                defaults.set(Int(Double(stored) * pow(0.5, Double(daysAway))), forKey: need.storageKey)
+                let decayed = Int(Double(stored) * pow(0.5, Double(daysAway)))
+                defaults.set(max(15, decayed), forKey: need.storageKey)
             }
         } else {
             for need in CompanionNeed.allCases {
@@ -66,7 +69,7 @@ private enum DailyRewardLedger {
             }
         }
         defaults.set(key, forKey: "chipmunk.rewardDay")
-        defaults.set(0, forKey: "chipmunk.dailyCare")
+        defaults.set(dailyStartingCare, forKey: "chipmunk.dailyCare")
         for need in CompanionNeed.allCases {
             defaults.set(needValue(need, defaults: defaults), forKey: startKey(for: need))
         }
@@ -79,7 +82,7 @@ private enum DailyRewardLedger {
         let defaults = UserDefaults.standard
         let ids = stringSet(defaults.string(forKey: "chipmunk.lessonRewardsToday"))
         guard !ids.contains(id) else { return 0 }
-        let earned = award(10)
+        let earned = award(15)
         if earned > 0 {
             defaults.set((ids.union([id])).sorted().joined(separator: ","), forKey: "chipmunk.lessonRewardsToday")
         }
@@ -90,7 +93,7 @@ private enum DailyRewardLedger {
         beginDay()
         let defaults = UserDefaults.standard
         let ids = stringSet(defaults.string(forKey: "chipmunk.lessonRewardsToday"))
-        return ids.contains(id) ? 0 : min(10, availableCare(defaults: defaults))
+        return ids.contains(id) ? 0 : min(15, availableCare(defaults: defaults))
     }
 
     static func awardActivity(_ id: String) -> Int {
@@ -153,7 +156,7 @@ private enum DailyRewardLedger {
         }
         let totalRoom = CompanionNeed.allCases.count * 100 - startingTotal
         guard totalRoom > 0 else { return 100 }
-        return min(dailyCap, restoredTotal * dailyCap / totalRoom)
+        return min(dailyCap, dailyStartingCare + restoredTotal * (dailyCap - dailyStartingCare) / totalRoom)
     }
 
     private static func needValue(_ need: CompanionNeed, defaults: UserDefaults) -> Int {
@@ -463,18 +466,18 @@ private struct CareBadge: Identifiable {
     let title: String
     let detail: String
     let symbol: String
-    let wellnessDays: Int
+    let qualifyingDays: Int
 
     var id: String { title }
-    func earned(bestStreak: Int) -> Bool { bestStreak >= wellnessDays }
+    func earned(bestStreak: Int) -> Bool { bestStreak >= qualifyingDays }
 }
 
 private enum BadgeCatalog {
     static let all = [
-        CareBadge(title: "Care Keeper", detail: "Daily care above 90 for one local day", symbol: "heart.fill", wellnessDays: 1),
-        CareBadge(title: "Explorer", detail: "Daily care above 90 for three days in a row", symbol: "sparkle.magnifyingglass", wellnessDays: 3),
-        CareBadge(title: "Guardian", detail: "Daily care above 90 for one week", symbol: "shield.lefthalf.filled", wellnessDays: 7),
-        CareBadge(title: "Expert", detail: "Daily care above 90 for two weeks", symbol: "rosette", wellnessDays: 14)
+        CareBadge(title: "Care Keeper", detail: "Study and keep daily care above 80 for one local day", symbol: "heart.fill", qualifyingDays: 1),
+        CareBadge(title: "Explorer", detail: "Study and keep daily care above 80 for three days in a row", symbol: "sparkle.magnifyingglass", qualifyingDays: 3),
+        CareBadge(title: "Guardian", detail: "Study and keep daily care above 80 for one week", symbol: "shield.lefthalf.filled", qualifyingDays: 7),
+        CareBadge(title: "Expert", detail: "Study and keep daily care above 80 for two weeks", symbol: "rosette", qualifyingDays: 14)
     ]
 
     static func highestEarned(bestStreak: Int) -> CareBadge? {
@@ -1391,7 +1394,7 @@ private struct ChipmunkCompanionCard: View {
                         }
                         .buttonStyle(.plain)
                         .disabled(!coatUnlocked(option))
-                        .accessibilityLabel(coatUnlocked(option) ? "Use \(option.name) companion accent" : "\(option.name) companion accent unlocks with the \(BadgeCatalog.all.first(where: { $0.wellnessDays == option.badgeDays })?.title ?? "care") badge")
+                        .accessibilityLabel(coatUnlocked(option) ? "Use \(option.name) companion accent" : "\(option.name) companion accent unlocks with the \(BadgeCatalog.all.first(where: { $0.qualifyingDays == option.badgeDays })?.title ?? "care") badge")
                     }
                     Spacer()
                     Text(coat).font(.system(size: 9, weight: .semibold, design: .rounded)).foregroundStyle(Palette.ink)
